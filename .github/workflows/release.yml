@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+
+jobs:
+  prepare:
+    name: Create draft release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat <<-'EOF' > NOTE.md
+          ## [Install guide](https://github.com/ethangreen-dev/lovely-injector?tab=readme-ov-file#manual-installation)
+          OS|Download|
+          --|--|
+          Linux (x86_64)|[x86_64-unknown-linux-gnu.tar.gz](https://github.com/ethangreen-dev/lovely-injector/releases/download/${{ github.ref_name }}/x86_64-unknown-linux-gnu.tar.gz)|
+          Linux (ARM64)|[aarch64-unknown-linux-gnu.tar.gz](https://github.com/ethangreen-dev/lovely-injector/releases/download/${{ github.ref_name }}/aarch64-unknown-linux-gnu.tar.gz)|
+          EOF
+
+          gh release create ${{ github.ref_name }} \
+          --title "${{ github.ref_name }}" \
+          --draft \
+          --generate-notes \
+          --notes-file NOTE.md
+
+  build-linux:
+    needs: prepare
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 python3-pip
+
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 10
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 10
+
+      - name: Install cargo-zigbuild (ARM64 only)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          pip3 install ziglang==0.13.0.post1 cargo-zigbuild
+
+      - name: Build
+        run: |
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            cargo zigbuild --target ${{ matrix.target }} --package lovely-unix --release
+          else
+            cargo build --target ${{ matrix.target }} --package lovely-unix --release
+          fi
+
+      - name: Compress tar.gz
+        run: |
+          cp ./crates/lovely-unix/run_lovely_linux.sh ./target/${{ matrix.target }}/release/
+          cd ./target/${{ matrix.target }}/release/
+          tar czfv lovely-${{ matrix.target }}.tar.gz liblovely.so run_lovely_linux.sh
+          mv lovely-${{ matrix.target }}.tar.gz ${{ github.workspace }}
+
+      - name: Upload to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} lovely-${{ matrix.target }}.tar.gz
